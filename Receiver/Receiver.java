@@ -1,5 +1,5 @@
-import java.net.*;
 import java.io.*;
+import java.net.*;
 
 public class Receiver{
     public static void main(String[] args) throws Exception{
@@ -76,9 +76,12 @@ public class Receiver{
 
                 if(!ChaosEngine.shouldDrop(ackCount, RN)){
                     sendAck(mySocket, mySIP, sAP, packetSeqNum);
+                    break;
                 }
+                
+                continue;
 
-                break;
+               
             }
         }
 

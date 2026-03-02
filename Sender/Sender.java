@@ -34,6 +34,8 @@ public class Sender{
 
         boolean handshakeComplete = false;
 
+        long startTime = System.currentTimeMillis();
+
         // loop until handshake is successful
         while(!handshakeComplete){
             try {
@@ -64,6 +66,7 @@ public class Sender{
         int currentSeqNum = 1; // The first data packet will have seqNum 1
         byte[] buffer = new byte[124]; // MAX_PAYLOAD_SIZE
         int bytesRead;
+
 
         // Read the file in chunks of up to 124 bytes.
         while((bytesRead = fileHandle.read(buffer)) != -1){
@@ -113,5 +116,48 @@ public class Sender{
 
         }
 
+        // Teardown
+        DSPacket eotPacket = new DSPacket(DSPacket.TYPE_EOT, currentSeqNum, null);
+        byte[] eotBytes = eotPacket.toBytes();
+        DatagramPacket sendEotDP = new DatagramPacket(eotBytes, eotBytes.length, myRIP, rDP);
+
+        boolean eotAckReceived = false;
+        int eotTimeoutCt = 0;
+
+        // Stop-and-Wait loop for EOT
+        while(!eotAckReceived){
+            try {
+                mySocket.send(sendEotDP);
+                // Await ACK for EOt
+                byte[] ackBuffer = new byte[128];
+                DatagramPacket ackDP = new DatagramPacket(ackBuffer, ackBuffer.length);
+                mySocket.receive(ackDP);
+                DSPacket ackPacket = new DSPacket(ackDP.getData());
+
+                // Verify ACK is proper seqNum for EOT
+                if(ackPacket.getType() == DSPacket.TYPE_ACK && ackPacket.getSeqNum() == currentSeqNum){
+                    eotAckReceived = true;
+                    System.out.println("File transfer complete.");
+                }
+
+            } catch (SocketTimeoutException e) {
+                eotTimeoutCt++;
+
+                // 3 consecutive timeouts for same packet, assume connection lost
+                    if(eotTimeoutCt >= 3){
+                        System.out.println("Unable to transfer the file.");
+                        System.exit(1);
+                    }
+                    System.out.println("Timeout, retransmitting EOT.");
+            }
+        }
+        // Calc + Print total transfer time
+        long endTime = System.currentTimeMillis();
+        double totalTimeSec = (endTime - startTime) / 1000.0;
+        System.out.printf("Total transfer time: %.2f seconds%n", totalTimeSec);
+
+        // Close
+        fileHandle.close();
+        mySocket.close();
     }
 }

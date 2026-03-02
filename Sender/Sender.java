@@ -1,5 +1,7 @@
 import java.io.*;
 import java.net.*;
+import java.util.*;
+
 
 public class Sender{
 
@@ -61,8 +63,10 @@ public class Sender{
                 System.out.println("Handshake timeout, retransmission.");
             }
         }
+        // TODO: 03/02/26: Transfer has been tested with Stop-and-Wait and is working. Must replace/update Phase 2/3 with GBN Logic.
 
         // Phase 2: Data Transfer
+        List <DSPacket> allPackets = new ArrayList<>();
         int currentSeqNum = 1; // The first data packet will have seqNum 1
         byte[] buffer = new byte[124]; // MAX_PAYLOAD_SIZE
         int bytesRead;
@@ -74,83 +78,115 @@ public class Sender{
             //If reading less than 124 bytes, size the payload correctly.
             byte[] payload = new byte[bytesRead];
             System.arraycopy(buffer, 0, payload, 0, bytesRead);
+            allPackets.add(new DSPacket(DSPacket.TYPE_DATA, currentSeqNum, payload));
+            currentSeqNum = (currentSeqNum + 1) % 128;
+        }
+
+        int base = 0;
+        int nextSeq = 0;
+        int timeoutCt = 0;
+
+        while(base < allPackets.size()){
             
-            // Create data packet
-            DSPacket dataPacket = new DSPacket(DSPacket.TYPE_DATA, currentSeqNum, payload);
-            byte[] packetBytes = dataPacket.toBytes();
-            DatagramPacket sendDataDP = new DatagramPacket(packetBytes, packetBytes.length, myRIP, rDP);
+            // Collect packets in the current window
+            List<DSPacket> windowPackets = new ArrayList<>();
+            while(nextSeq < base + windowSize && nextSeq < allPackets.size()){
+                windowPackets.add(allPackets.get(nextSeq));
+                nextSeq++;
+            }
 
-            boolean ackReceived = false;
-            int timeoutCt = 0;
+            for(int i = 0; i < windowPackets.size(); i+= 4){
+                List<DSPacket> chunk = new ArrayList<>();
+                for(int j = 0; j < 4 && i + j < windowPackets.size(); j++){
+                    chunk.add(windowPackets.get(i + j));  
+                }
 
-            // Stop-and-Wait loop for this packet
-            while(!ackReceived){
-                try {
-                    mySocket.send(sendDataDP);
+                List<DSPacket> permutedChunk = ChaosEngine.permutePackets(chunk);
 
-                    // Wait for ACK
+                for (DSPacket p : permutedChunk){
+                    byte[] pBytes = p.toBytes();
+                    DatagramPacket dataDP = new DatagramPacket(pBytes, pBytes.length, myRIP, rDP);
+                    mySocket.send(dataDP);
+                }
+            }
+            // Await ACKs for the window
+            try {
+                while (true) { 
                     byte[] ackBuffer = new byte[128];
                     DatagramPacket ackDP = new DatagramPacket(ackBuffer, ackBuffer.length);
                     mySocket.receive(ackDP);
-
                     DSPacket ackPacket = new DSPacket(ackDP.getData());
 
-                    // Verify ACK is for current seqNum
-                    if (ackPacket.getType() == DSPacket.TYPE_ACK && ackPacket.getSeqNum() == currentSeqNum){
-                        ackReceived = true;
+                    if(ackPacket.getType() == DSPacket.TYPE_ACK){
+                        int receivedAckSeq = ackPacket.getSeqNum();
+                        int newBase = base;
 
-                        // Move to next sequence number
-                        currentSeqNum = (currentSeqNum + 1) % 128;
-                    }
-                } catch (SocketTimeoutException e) {
-                    timeoutCt++;
+                        // Check if cumulative ACK advances the window
+                        for (int k = base; k < nextSeq; k++){
+                            if (allPackets.get(k).getSeqNum() == receivedAckSeq){
+                                newBase = k + 1; // Move base one past the ACKed packet
+                            }
+                        }
 
-                    // 3 consecutive timeouts for same packet, assume connection lost
-                    if(timeoutCt >= 3){
-                        System.out.println("Unable to transfer the file.");
-                        System.exit(1);
+                        // If window moves forward, reset timeout ctr
+                        if(newBase > base){
+                            base = newBase;
+                            timeoutCt = 0; 
+                            break;
+                        }
                     }
-                    System.out.println("Timeout, retransmitting.");
                 }
+            } catch (SocketTimeoutException e) {
+                timeoutCt++;
+                if (timeoutCt >= 3){
+                    System.out.println("Unable to transfer the file.");
+                    System.exit(1);
+                }
+                System.out.println("Timeout, retransmittiing.");
+                // Retransmit entire window from the base
+                nextSeq = base;
             }
-
         }
 
-        // Teardown
-        DSPacket eotPacket = new DSPacket(DSPacket.TYPE_EOT, currentSeqNum, null);
+        // Start of Teardown
+
+        // Determine the EOT seqNum based on last packet sent, default 1 if no packet sent
+        int eotSeqNum = 1; 
+        if (!allPackets.isEmpty()){
+            eotSeqNum = (allPackets.get(allPackets.size() - 1).getSeqNum() + 1) % 128; // EOT seqNum is one past the last data packet
+        }
+
+        DSPacket eotPacket = new DSPacket(DSPacket.TYPE_EOT, eotSeqNum, null);
         byte[] eotBytes = eotPacket.toBytes();
         DatagramPacket sendEotDP = new DatagramPacket(eotBytes, eotBytes.length, myRIP, rDP);
-
+    
         boolean eotAckReceived = false;
         int eotTimeoutCt = 0;
 
-        // Stop-and-Wait loop for EOT
         while(!eotAckReceived){
             try {
+                
                 mySocket.send(sendEotDP);
-                // Await ACK for EOt
                 byte[] ackBuffer = new byte[128];
                 DatagramPacket ackDP = new DatagramPacket(ackBuffer, ackBuffer.length);
                 mySocket.receive(ackDP);
                 DSPacket ackPacket = new DSPacket(ackDP.getData());
 
-                // Verify ACK is proper seqNum for EOT
-                if(ackPacket.getType() == DSPacket.TYPE_ACK && ackPacket.getSeqNum() == currentSeqNum){
+                if(ackPacket.getType() == DSPacket.TYPE_ACK && ackPacket.getSeqNum() == eotSeqNum){
                     eotAckReceived = true;
                     System.out.println("File transfer complete.");
                 }
-
             } catch (SocketTimeoutException e) {
                 eotTimeoutCt++;
-
-                // 3 consecutive timeouts for same packet, assume connection lost
-                    if(eotTimeoutCt >= 3){
-                        System.out.println("Unable to transfer the file.");
-                        System.exit(1);
-                    }
-                    System.out.println("Timeout, retransmitting EOT.");
+                if(eotTimeoutCt >= 3){
+                    System.out.println("Unable to transfer the file.");
+                    System.exit(1);
+                }
+                System.out.println("Timeout, retransmitting EOT.");
             }
+
         }
+
         // Calc + Print total transfer time
         long endTime = System.currentTimeMillis();
         double totalTimeSec = (endTime - startTime) / 1000.0;

@@ -86,6 +86,9 @@ public class Sender{
         int nextSeq = 0;
         int timeoutCt = 0;
 
+        // Test: Print total packets loaded
+        System.out.println("Limit Test: Loaded " + allPackets.size() + " packets into memory.");
+
         while(base < allPackets.size()){
             
             // Collect packets in the current window

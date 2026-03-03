@@ -1,5 +1,6 @@
 import java.io.*;
 import java.net.*;
+import java.util.*;
 
 public class Receiver{
     public static void main(String[] args) throws Exception{
@@ -7,22 +8,24 @@ public class Receiver{
         //cmdline for receiver: java Receiver <sender_ip> <sender_ack_port> <rcv_data_port> <output_file> <RN>
         String sIP = args[0];
         int sAP = Integer.parseInt(args[1]);
-
         int rDP = Integer.parseInt(args[2]);
-
         String op = args[3];
         int RN = Integer.parseInt(args[4]);
 
-        //write throws exception in void main to get rid of error
+        int windowSize = 1; // default to stop-and-wait
+        if(args.length > 5){
+            windowSize = Integer.parseInt(args[5]);
+        }
+
         InetAddress mySIP = InetAddress.getByName(sIP);
-
         DatagramSocket mySocket = new DatagramSocket(rDP);
-
         FileOutputStream fileHandle = new FileOutputStream(op);
 
-        int tempS = 1;
-        int tempOrder = 0;
+        int expectedSeqNum = 1;
+        int lastAckSent = 0; // Tracks cumulative ACK for GBN
         int ackCount = 0;
+
+        HashMap<Integer, byte[]> buffer = new HashMap<>(); // Buffer out of order packs in GBN
 
         //infinte loop till mentioned otherwise, for our receive
         while(true){
@@ -31,17 +34,13 @@ public class Receiver{
             byte[] bigBeautifulByte = new byte[128];
 
             DatagramPacket myDP = new DatagramPacket(bigBeautifulByte, bigBeautifulByte.length);
-
             mySocket.receive(myDP);
-
             DSPacket myPacket = new DSPacket (myDP.getData());
 
             int packetType = myPacket.getType();
-
             int packetSeqNum = myPacket.getSeqNum();
 
-            //at this point we have received, check the type
-
+            // Handshake and ACK for SOT
             if(packetType == DSPacket.TYPE_SOT){
                 ackCount++;
 
@@ -52,22 +51,41 @@ public class Receiver{
 
                 continue;
             }
-
+            
+            // Process Data
             if(packetType == DSPacket.TYPE_DATA){
-                if(packetSeqNum == tempS){
-                    fileHandle.write(myPacket.getPayload());
-
-                    tempOrder = packetSeqNum;
-
-                    tempS = (tempS + 1) % 128;
+                // Check if packet is in the window
+                boolean inWindow = false;
+                for (int i = 0; i < windowSize; i++){
+                    if (packetSeqNum == (expectedSeqNum + i) % 128){
+                        inWindow = true;
+                        break;
+                    }
                 }
+                if (packetSeqNum == expectedSeqNum){
+
+                // Packet arrived, deliver in order
+                fileHandle.write(myPacket.getPayload());
+                lastAckSent = expectedSeqNum;
+                expectedSeqNum = (expectedSeqNum + 1) % 128;
+
+                // Check buffer for next expected packets
+                while (buffer.containsKey(expectedSeqNum)){
+                    fileHandle.write(buffer.get(expectedSeqNum));
+                    buffer.remove(expectedSeqNum); // Remove from buffer after write
+                    lastAckSent = expectedSeqNum;
+                    expectedSeqNum = (expectedSeqNum + 1) % 128;
+                }
+            } else if (inWindow && !buffer.containsKey(packetSeqNum)){
+                // Out of order packt arrived in window. Buffer it fo rlater delivery
+                buffer.put(packetSeqNum, myPacket.getPayload());
+            }
 
                 ackCount++;
 
                 if(!ChaosEngine.shouldDrop(ackCount, RN)){
-                    sendAck(mySocket, mySIP, sAP, tempOrder);
+                    sendAck(mySocket, mySIP, sAP, lastAckSent);
                 }
-
                 continue;
             }
 
@@ -76,15 +94,13 @@ public class Receiver{
 
                 if(!ChaosEngine.shouldDrop(ackCount, RN)){
                     sendAck(mySocket, mySIP, sAP, packetSeqNum);
+                    System.out.println("File transfer complete.");
                     break;
                 }
-                
+                // if ACK is droppde loop continues so sender can retransmit EOT
                 continue;
-
-               
             }
         }
-
         fileHandle.close();
         mySocket.close();
 

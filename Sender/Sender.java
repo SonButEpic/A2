@@ -2,83 +2,83 @@ import java.io.*;
 import java.net.*;
 import java.util.*;
 
-
 public class Sender{
 
     public static void main(String[] args) throws Exception{
 
-        //cmdline for sender: java Sender <rcv_ip> <rcv_data_port> <sender_ack_port> <input_file> <timeout_ms> [window_size]
-        String rIP = args[0];
-        int rDP = Integer.parseInt(args[1]);
-        int sAP = Integer.parseInt(args[2]);
-        String ip = args[3];
+        //cmdline for that will be used by the Sender <rcv_ip> <rcv_data_port> <sender_ack_port> <input_file> <timeout_ms> [window_size]
+        String tempUserIPAddress = args[0];
+        int receiverDataPort = Integer.parseInt(args[1]);
+        int mySenderAckPort = Integer.parseInt(args[2]);
+        String myInputFile = args[3];
+        
         int timeoutMs = Integer.parseInt(args[4]);
         int windowSize = 1;
 
-        // Is window size provided for GBN
         if(args.length > 5){
             windowSize = Integer.parseInt(args[5]);
         }
 
-        InetAddress myRIP = InetAddress.getByName(rIP);
-        DatagramSocket mySocket = new DatagramSocket(sAP);
+        //turn the string of our ip address into an inet object. wiull use this to create packets later for our sender
+        InetAddress myInetReceiverIP = InetAddress.getByName(tempUserIPAddress);
+        DatagramSocket myDatagramSocketWalkEmDown = new DatagramSocket(mySenderAckPort);
 
-        // Set timeout for socket to handle retransmissions
-        mySocket.setSoTimeout(timeoutMs);
+        myDatagramSocketWalkEmDown.setSoTimeout(timeoutMs);
 
-        FileInputStream fileHandle = new FileInputStream(ip);
+        FileInputStream fileHandle = new FileInputStream(myInputFile);
 
-        // Handshake
         DSPacket sotPacket = new DSPacket(DSPacket.TYPE_SOT, 0, new byte[0]);
+        //here we throw our packet into the byte array
         byte[] sotData = sotPacket.toBytes();
 
-        DatagramPacket sendDP = new DatagramPacket(sotData, sotData.length, myRIP, rDP);
+        DatagramPacket currPacket = new DatagramPacket(sotData, sotData.length, myInetReceiverIP, receiverDataPort);
 
         boolean handshakeComplete = false;
 
         long startTime = System.currentTimeMillis();
 
-        // loop until handshake is successful
+        // we are gonna keep looping until the handshake is finaly done to move on to the data transfer section. In here we prepare for buffer , wait for ack, adn error handeling if things blow up
         while(!handshakeComplete){
             try {
-                mySocket.send(sendDP);
+                myDatagramSocketWalkEmDown.send(currPacket);
 
-                byte[] bigByte = new byte[128];
-                DatagramPacket myDP = new DatagramPacket(bigByte, bigByte.length);
+                byte[] bigBeautifulByte = new byte[DSPacket.MAX_PACKET_SIZE];
+                DatagramPacket bytesBeautifulDatagramPacket = new DatagramPacket(bigBeautifulByte, bigBeautifulByte.length);
+                myDatagramSocketWalkEmDown.receive(bytesBeautifulDatagramPacket);
 
-                mySocket.receive(myDP);
+                DSPacket myBeautifulPacket = new DSPacket(bytesBeautifulDatagramPacket.getData());
 
-                DSPacket myPacket = new DSPacket(myDP.getData());
+                int packetType = myBeautifulPacket.getType();
+                int packetSeqNum = myBeautifulPacket.getSeqNum();
 
-                int packetType = myPacket.getType();
-                int packetSeqNum = myPacket.getSeqNum();
-
-                // Expecting ACK for SOT with seqNum 0
                 if(packetType == DSPacket.TYPE_ACK && packetSeqNum == 0){
                     System.out.println("Connection established.");
                     handshakeComplete = true;
                 }
             } catch (SocketTimeoutException e) {
-                // Timeout occurred, retransmit the SOT packet
                 System.out.println("Handshake timeout, retransmission.");
             }
         }
         // TODO: 03/02/26: Transfer has been tested with Stop-and-Wait and is working. Must replace/update Phase 2/3 with GBN Logic.
 
-        // Phase 2: Data Transfer
-        List <DSPacket> allPackets = new ArrayList<>();
+        List <DSPacket> allPackets = new ArrayList<>(); //a list will be used to store all of that packets for transmission
         int currentSeqNum = 1; // The first data packet will have seqNum 1
-        byte[] buffer = new byte[124]; // MAX_PAYLOAD_SIZE
+        
+        byte[] buffer = new byte[DSPacket.MAX_PAYLOAD_SIZE];
         int bytesRead;
 
 
-        // Read the file in chunks of up to 124 bytes.
+        // read the file in chunks of up to 124 bytes
         while((bytesRead = fileHandle.read(buffer)) != -1){
 
-            //If reading less than 124 bytes, size the payload correctly.
+            //if reading less than 124 bytes ensure to size the payload correctly
             byte[] payload = new byte[bytesRead];
+            
             System.arraycopy(buffer, 0, payload, 0, bytesRead);
+            
             allPackets.add(new DSPacket(DSPacket.TYPE_DATA, currentSeqNum, payload));
+            
+
             currentSeqNum = (currentSeqNum + 1) % 128;
         }
 
@@ -86,38 +86,50 @@ public class Sender{
         int nextSeq = 0;
         int timeoutCt = 0;
 
-        // Test: Print total packets loaded
         System.out.println("Limit Test: Loaded " + allPackets.size() + " packets into memory.");
 
+        //we use a while loop to send all of the packets until we get an ack for these packets and can move on from ts
         while(base < allPackets.size()){
             
-            // Collect packets in the current window
             List<DSPacket> windowPackets = new ArrayList<>();
+            //run back a loop BUT this time we are collecting the packets ;) (for this window tho)
             while(nextSeq < base + windowSize && nextSeq < allPackets.size()){
+                
                 windowPackets.add(allPackets.get(nextSeq));
+                
                 nextSeq++;
             }
 
+            //run back anotherr loop but use a for loop to iterate through our packets in humble chunks of 4 this time
             for(int i = 0; i < windowPackets.size(); i+= 4){
-                List<DSPacket> chunk = new ArrayList<>();
+                
+                List<DSPacket> chunkOdata = new ArrayList<>();
+                
                 for(int j = 0; j < 4 && i + j < windowPackets.size(); j++){
-                    chunk.add(windowPackets.get(i + j));  
+                    chunkOdata.add(windowPackets.get(i + j));  
                 }
 
-                List<DSPacket> permutedChunk = ChaosEngine.permutePackets(chunk);
+                List<DSPacket> mutlatedChunk = ChaosEngine.permutePackets(chunkOdata);
 
-                for (DSPacket p : permutedChunk){
-                    byte[] pBytes = p.toBytes();
-                    DatagramPacket dataDP = new DatagramPacket(pBytes, pBytes.length, myRIP, rDP);
-                    mySocket.send(dataDP);
+                //one more for loop, we gotta send the mutlated chunks and scrable some packets
+                for (DSPacket p : mutlatedChunk){
+                    
+                    byte[] tempData = p.toBytes();
+                    
+                    DatagramPacket currDataPacket = new DatagramPacket(tempData, tempData.length, myInetReceiverIP, receiverDataPort);
+                    
+                    myDatagramSocketWalkEmDown.send(currDataPacket);
                 }
             }
-            // Await ACKs for the window
             try {
                 while (true) { 
-                    byte[] ackBuffer = new byte[128];
+                    
+                    byte[] ackBuffer = new byte[DSPacket.MAX_PACKET_SIZE];
+                    
                     DatagramPacket ackDP = new DatagramPacket(ackBuffer, ackBuffer.length);
-                    mySocket.receive(ackDP);
+                    
+                myDatagramSocketWalkEmDown.receive(ackDP);
+                    
                     DSPacket ackPacket = new DSPacket(ackDP.getData());
 
                     if(ackPacket.getType() == DSPacket.TYPE_ACK){
@@ -126,77 +138,96 @@ public class Sender{
 
                         // Check if cumulative ACK advances the window
                         for (int k = base; k < nextSeq; k++){
+                            
                             if (allPackets.get(k).getSeqNum() == receivedAckSeq){
-                                newBase = k + 1; // Move base one past the ACKed packet
+                                newBase = k + 1;
                             }
                         }
 
                         // If window moves forward, reset timeout ctr
                         if(newBase > base){
+                            
                             base = newBase;
+                            
                             timeoutCt = 0; 
+                            
                             break;
                         }
                     }
                 }
             } catch (SocketTimeoutException e) {
                 timeoutCt++;
+                
                 if (timeoutCt >= 3){
                     System.out.println("Unable to transfer the file.");
+                    
                     System.exit(1);
                 }
+                
                 System.out.println("Timeout, retransmittiing.");
-                // Retransmit entire window from the base
+                
                 nextSeq = base;
+                
             }
         }
 
-        // Start of Teardown
-
-        // Determine the EOT seqNum based on last packet sent, default 1 if no packet sent
+        // determine the EOT seqNum based on last packet sent, default 1 if no packet sent
         int eotSeqNum = 1; 
+        
         if (!allPackets.isEmpty()){
             eotSeqNum = (allPackets.get(allPackets.size() - 1).getSeqNum() + 1) % 128; // EOT seqNum is one past the last data packet
         }
 
         DSPacket eotPacket = new DSPacket(DSPacket.TYPE_EOT, eotSeqNum, null);
+        
         byte[] eotBytes = eotPacket.toBytes();
-        DatagramPacket sendEotDP = new DatagramPacket(eotBytes, eotBytes.length, myRIP, rDP);
+        
+        DatagramPacket sendEotDP = new DatagramPacket(eotBytes, eotBytes.length, myInetReceiverIP, receiverDataPort);
     
         boolean eotAckReceived = false;
+        
         int eotTimeoutCt = 0;
 
         while(!eotAckReceived){
             try {
                 
-                mySocket.send(sendEotDP);
-                byte[] ackBuffer = new byte[128];
+                myDatagramSocketWalkEmDown.send(sendEotDP);
+                byte[] ackBuffer = new byte[DSPacket.MAX_PACKET_SIZE];
+               
                 DatagramPacket ackDP = new DatagramPacket(ackBuffer, ackBuffer.length);
-                mySocket.receive(ackDP);
+                
+                myDatagramSocketWalkEmDown.receive(ackDP);
+                
                 DSPacket ackPacket = new DSPacket(ackDP.getData());
 
                 if(ackPacket.getType() == DSPacket.TYPE_ACK && ackPacket.getSeqNum() == eotSeqNum){
                     eotAckReceived = true;
+                    
                     System.out.println("File transfer complete.");
                 }
-            } catch (SocketTimeoutException e) {
+            } 
+            catch (SocketTimeoutException e) {
                 eotTimeoutCt++;
+                
                 if(eotTimeoutCt >= 3){
                     System.out.println("Unable to transfer the file.");
+                    
                     System.exit(1);
                 }
+                
                 System.out.println("Timeout, retransmitting EOT.");
             }
 
         }
 
-        // Calc + Print total transfer time
         long endTime = System.currentTimeMillis();
+        
         double totalTimeSec = (endTime - startTime) / 1000.0;
+        
         System.out.printf("Total transfer time: %.2f seconds%n", totalTimeSec);
 
-        // Close
         fileHandle.close();
-        mySocket.close();
+        
+        myDatagramSocketWalkEmDown.close();
     }
 }

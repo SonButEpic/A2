@@ -5,118 +5,139 @@ import java.util.*;
 public class Receiver{
     public static void main(String[] args) throws Exception{
         
-        //cmdline for receiver: java Receiver <sender_ip> <sender_ack_port> <rcv_data_port> <output_file> <RN>
-        String sIP = args[0];
-        int sAP = Integer.parseInt(args[1]);
-        int rDP = Integer.parseInt(args[2]);
-        String op = args[3];
+        //cmdline command that will be used for the receiver: java Receiver <sender_ip> <sender_ack_port> <rcv_data_port> <output_file> <RN>
+        String tempUserIPAddress = args[0];
+        int mySenderAckPort = Integer.parseInt(args[1]);
+        int receiverDataPort = Integer.parseInt(args[2]);
+        
+        String myOutputFile = args[3];
         int RN = Integer.parseInt(args[4]);
 
-        int windowSize = 1; // default to stop-and-wait
+        int windowSize = 127; 
+        /*removed the following code since we dont have a window size argument in cmdline for receiver
         if(args.length > 5){
             windowSize = Integer.parseInt(args[5]);
         }
+        */ 
 
-        InetAddress mySIP = InetAddress.getByName(sIP);
-        DatagramSocket mySocket = new DatagramSocket(rDP);
-        FileOutputStream fileHandle = new FileOutputStream(op);
+        //used to convert the sender ip which was a string into an inet address, this just makes it so we can use the InetAddress object to send UDP packets to the sender
+        InetAddress myInetSIP = InetAddress.getByName(tempUserIPAddress);
+        DatagramSocket mySocket = new DatagramSocket(receiverDataPort);
+        FileOutputStream fileHandle = new FileOutputStream(myOutputFile);
 
-        int expectedSeqNum = 1;
-        int lastAckSent = 0; // Tracks cumulative ACK for GBN
-        int ackCount = 0;
+        int expectedSeqNum = 0;
+        
+        int tempLastACKSent = 0;
+        int ackCounter = 0;
 
-        HashMap<Integer, byte[]> buffer = new HashMap<>(); // Buffer out of order packs in GBN
+        HashMap<Integer, byte[]> buffer = new HashMap<>(); //buffer is used to store out of order packets. We use as hash map to store them when they are out of order and for quick retrevial when our packet finally arrives
 
-        //infinte loop till mentioned otherwise, for our receive
+
         while(true){
 
             //create a DS-FTP packet as outlined in assignment guidelines (section 2 goes over thid)
-            byte[] bigBeautifulByte = new byte[128];
+            byte[] bigBeautifulByte = new byte[DSPacket.MAX_PACKET_SIZE];
 
-            DatagramPacket myDP = new DatagramPacket(bigBeautifulByte, bigBeautifulByte.length);
-            mySocket.receive(myDP);
-            DSPacket myPacket = new DSPacket (myDP.getData());
+            DatagramPacket bytesBeautifulDatagramPacket = new DatagramPacket(bigBeautifulByte, bigBeautifulByte.length);
+            
+            //recieve our beautiful packet to be processef
+            mySocket.receive(bytesBeautifulDatagramPacket);
+            
+            //once we get our beautiful packet we gotta convert it into a DSPacket object to be used
+            DSPacket myBeautifulPacket = new DSPacket (bytesBeautifulDatagramPacket.getData());
 
-            int packetType = myPacket.getType();
-            int packetSeqNum = myPacket.getSeqNum();
 
-            // Handshake and ACK for SOT
+            //store the type because there are 3 different types and get teh sequence num too
+            int packetType = myBeautifulPacket.getType();
+            int packetSeqNum = myBeautifulPacket.getSeqNum();
+
+            // this here is the handshake where if sucessful add 1 to the ack counter
             if(packetType == DSPacket.TYPE_SOT){
-                ackCount++;
+                ackCounter++;
 
-                if(!ChaosEngine.shouldDrop(ackCount, RN)){
-                    //helper function
-                    sendAck(mySocket, mySIP, sAP, packetSeqNum);
+                if(!ChaosEngine.shouldDrop(ackCounter, RN)){
+                    
+                    DSPacket tempAck = new DSPacket(DSPacket.TYPE_ACK, packetSeqNum, null);
+                    
+                    byte[] tempData = tempAck.toBytes();
+                    
+                    DatagramPacket currPacket = new DatagramPacket(tempData, tempData.length, myInetSIP, mySenderAckPort);
+                    
+                    mySocket.send(currPacket);
                 }
 
                 continue;
             }
             
-            // Process Data
+            
             if(packetType == DSPacket.TYPE_DATA){
-                // Check if packet is in the window
-                boolean inWindow = false;
-                for (int i = 0; i < windowSize; i++){
-                    if (packetSeqNum == (expectedSeqNum + i) % 128){
-                        inWindow = true;
-                        break;
-                    }
-                }
+
+
+                int difference = (packetSeqNum - expectedSeqNum + 128 ) % 128;
+                boolean withinBoundaries = difference < windowSize;
+
                 if (packetSeqNum == expectedSeqNum){
 
-                // Packet arrived, deliver in order
-                fileHandle.write(myPacket.getPayload());
-                lastAckSent = expectedSeqNum;
-                expectedSeqNum = (expectedSeqNum + 1) % 128;
-
-                // Check buffer for next expected packets
-                while (buffer.containsKey(expectedSeqNum)){
-                    fileHandle.write(buffer.get(expectedSeqNum));
-                    buffer.remove(expectedSeqNum); // Remove from buffer after write
-                    lastAckSent = expectedSeqNum;
+                    fileHandle.write(myBeautifulPacket.getPayload());
+                    tempLastACKSent = expectedSeqNum;
+                    
+                    
                     expectedSeqNum = (expectedSeqNum + 1) % 128;
-                }
-            } else if (inWindow && !buffer.containsKey(packetSeqNum)){
+
+                    // a quick check to see if our packet aer now able to recieved
+                    while (buffer.containsKey(expectedSeqNum)){
+                        fileHandle.write(buffer.get(expectedSeqNum));
+                        
+                        buffer.remove(expectedSeqNum);
+                        tempLastACKSent = expectedSeqNum;
+
+
+                        
+                        expectedSeqNum = (expectedSeqNum + 1) % 128;
+                    }
+            } else if (withinBoundaries && !buffer.containsKey(packetSeqNum)){
                 // Out of order packt arrived in window. Buffer it fo rlater delivery
-                buffer.put(packetSeqNum, myPacket.getPayload());
+                buffer.put(packetSeqNum, myBeautifulPacket.getPayload());
             }
 
-                ackCount++;
+                ackCounter++;
 
-                if(!ChaosEngine.shouldDrop(ackCount, RN)){
-                    sendAck(mySocket, mySIP, sAP, lastAckSent);
+                if(!ChaosEngine.shouldDrop(ackCounter, RN)){
+
+                    DSPacket tempAck = new DSPacket(DSPacket.TYPE_ACK, tempLastACKSent, null);
+                    byte[] tempData = tempAck.toBytes();
+                    
+
+                    DatagramPacket currPacket = new DatagramPacket(tempData, tempData.length, myInetSIP, mySenderAckPort);
+                    
+                    mySocket.send(currPacket);
                 }
                 continue;
             }
 
             if(packetType == DSPacket.TYPE_EOT){
-                ackCount ++;
+                ackCounter ++;
 
-                if(!ChaosEngine.shouldDrop(ackCount, RN)){
-                    sendAck(mySocket, mySIP, sAP, packetSeqNum);
+                if(!ChaosEngine.shouldDrop(ackCounter, RN)){
+                    
+                    DSPacket tempAck = new DSPacket(DSPacket.TYPE_ACK, packetSeqNum, null);
+                   
+                    byte[] tempData = tempAck.toBytes();
+                    
+                    DatagramPacket currPacket = new DatagramPacket(tempData, tempData.length, myInetSIP, mySenderAckPort);
+                    
+                    mySocket.send(currPacket);
+
+
                     System.out.println("File transfer complete.");
                     break;
                 }
-                // if ACK is droppde loop continues so sender can retransmit EOT
                 continue;
             }
         }
         fileHandle.close();
         mySocket.close();
 
-        //done at this point
 
-    }
-
-    private static void sendAck(DatagramSocket ts, InetAddress myIP, int myPort, int seqNum) throws Exception{
-        DSPacket helpAck = new DSPacket(DSPacket.TYPE_ACK, seqNum, null);
-
-        byte[] tempData = helpAck.toBytes();
-
-        DatagramPacket dPacket = new DatagramPacket(tempData, tempData.length, myIP, myPort);
-
-        ts.send(dPacket);
-
-        //been sent
     }
 }

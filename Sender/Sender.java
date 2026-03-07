@@ -54,6 +54,16 @@ public class Sender{
                 if(packetType == DSPacket.TYPE_ACK && packetSeqNum == 0){
                     System.out.println("Connection established.");
                     handshakeComplete = true;
+
+                    try{
+                        myDatagramSocketWalkEmDown.setSoTimeout(10);
+                        while (true) { 
+                            myDatagramSocketWalkEmDown.receive(new DatagramPacket(new byte[DSPacket.MAX_PACKET_SIZE], DSPacket.MAX_PACKET_SIZE));
+
+                        }
+                    } catch (SocketTimeoutException e) {
+                        myDatagramSocketWalkEmDown.setSoTimeout(timeoutMs);
+                    }
                 }
             } catch (SocketTimeoutException e) {
                 System.out.println("Handshake timeout, retransmission.");
@@ -110,6 +120,10 @@ public class Sender{
                 }
 
                 List<DSPacket> mutlatedChunk = ChaosEngine.permutePackets(chunkOdata);
+
+                if(mutlatedChunk == null || mutlatedChunk.isEmpty()){
+                    mutlatedChunk = chunkOdata;
+                }
 
                 //one more for loop, we gotta send the mutlated chunks and scrable some packets
                 for (DSPacket p : mutlatedChunk){

@@ -13,19 +13,17 @@ public class Receiver{
         String myOutputFile = args[3];
         int RN = Integer.parseInt(args[4]);
 
-        int windowSize = 127; 
-        /*removed the following code since we dont have a window size argument in cmdline for receiver
+        int windowSize = 1; 
         if(args.length > 5){
             windowSize = Integer.parseInt(args[5]);
         }
-        */ 
 
         //used to convert the sender ip which was a string into an inet address, this just makes it so we can use the InetAddress object to send UDP packets to the sender
         InetAddress myInetSIP = InetAddress.getByName(tempUserIPAddress);
         DatagramSocket mySocket = new DatagramSocket(receiverDataPort);
         FileOutputStream fileHandle = new FileOutputStream(myOutputFile);
 
-        int expectedSeqNum = 0;
+        int expectedSeqNum = 1;
         
         int tempLastACKSent = 0;
         int ackCounter = 0;
